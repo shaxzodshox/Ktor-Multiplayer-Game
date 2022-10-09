@@ -1,0 +1,1 @@
+rootProject.name = "uk.shakhzod.ktor-drawing-game"
