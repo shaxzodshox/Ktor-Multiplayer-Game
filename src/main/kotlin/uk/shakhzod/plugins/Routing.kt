@@ -6,6 +6,7 @@ import io.ktor.application.*
 import io.ktor.response.*
 import io.ktor.request.*
 import uk.shakhzod.routes.createRoomRoute
+import uk.shakhzod.routes.gameWebSocketRoute
 import uk.shakhzod.routes.getRoomsRoute
 import uk.shakhzod.routes.joinRoomRoute
 
@@ -14,5 +15,6 @@ fun Application.configureRouting() {
         createRoomRoute()
         getRoomsRoute()
         joinRoomRoute()
+        gameWebSocketRoute()
     }
 }
