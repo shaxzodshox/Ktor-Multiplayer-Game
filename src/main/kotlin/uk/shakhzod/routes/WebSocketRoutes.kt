@@ -12,8 +12,10 @@ import uk.shakhzod.data.models.*
 import uk.shakhzod.gson
 import uk.shakhzod.other.Constants.TYPE_ANNOUNCEMENT
 import uk.shakhzod.other.Constants.TYPE_CHAT_MESSAGE
+import uk.shakhzod.other.Constants.TYPE_CHOSEN_WORD
 import uk.shakhzod.other.Constants.TYPE_DRAW_DATA
 import uk.shakhzod.other.Constants.TYPE_JOIN_ROOM_HANDSHAKE
+import uk.shakhzod.other.Constants.TYPE_PHASE_CHANGE
 import uk.shakhzod.server
 import uk.shakhzod.session.DrawingSession
 
@@ -43,6 +45,10 @@ fun Route.gameWebSocketRoute() {
                 if(room.phase == Room.Phase.GAME_RUNNING){
                     room.broadcastToAllExcept(message, clientId)
                 }
+                }
+                is ChosenWord -> {
+                    val room = server.rooms[payload.roomName] ?: return@standardWebSocket
+                    room.setWordAndSwitchToGameRunning(payload.chosenWord)
                 }
                 is ChatMessage -> {
 
@@ -76,6 +82,8 @@ fun Route.standardWebSocket(
                         TYPE_DRAW_DATA -> DrawData::class.java
                         TYPE_ANNOUNCEMENT -> Announcement::class.java
                         TYPE_JOIN_ROOM_HANDSHAKE -> JoinRoomHandshake::class.java
+                        TYPE_PHASE_CHANGE -> PhaseChange::class.java
+                        TYPE_CHOSEN_WORD -> ChosenWord::class.java
                         else -> BaseModel::class.java
                     }
                     val payload: BaseModel = gson.fromJson(message, type)
