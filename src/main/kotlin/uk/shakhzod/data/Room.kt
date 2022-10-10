@@ -8,6 +8,8 @@ import uk.shakhzod.other.getRandomWords
 import uk.shakhzod.other.matchesWord
 import uk.shakhzod.other.transformToUnderscores
 import uk.shakhzod.other.words
+import uk.shakhzod.server
+import java.util.concurrent.ConcurrentHashMap
 
 class Room(
     val name: String,
@@ -21,6 +23,9 @@ class Room(
     private var curWords: List<String>? = null
     private var drawingPlayerIndex = 0
     private var startTime = 0L
+
+    private val playerRemoveJobs = ConcurrentHashMap<String, Job>()
+    private val leftPlayers = ConcurrentHashMap<String, Pair<Player, Int>>()
 
     private var phaseChangedListener: ((Phase) -> Unit)? = null
 
@@ -65,9 +70,46 @@ class Room(
             System.currentTimeMillis(),
             Announcement.TYPE_PLAYER_JOINED
         )
+        sendWordToPlayer(player)
+        broadcastPlayerStates()
         broadcast(gson.toJson(announcement))
 
         return player
+    }
+
+    fun removePlayer(clientId: String) {
+        val player = players.find { it.clientId == clientId } ?: return
+        val index = players.indexOf(player)
+        leftPlayers[clientId] = player to index
+        players = players - player
+
+        playerRemoveJobs[clientId] = GlobalScope.launch {
+            delay(PLAYER_REMOVE_TIME)
+            val playerToRemove = leftPlayers[clientId]
+            leftPlayers.remove(clientId)
+            playerToRemove?.let {
+                players = players - it.first
+            }
+            playerRemoveJobs.remove(clientId)
+        }
+
+        val announcement = Announcement(
+            "${player.username} left the party :(",
+            System.currentTimeMillis(),
+            Announcement.TYPE_PLAYER_LEFT
+        )
+
+        GlobalScope.launch {
+            broadcastPlayerStates()
+            broadcast(gson.toJson(announcement))
+            if (players.size == 1) {
+                phase = Phase.WAITING_FOR_PLAYERS
+                timerJob?.cancel()
+            } else if (players.isEmpty()) {
+                kill()
+                server.rooms.remove(name)
+            }
+        }
     }
 
     private fun timeAndNotify(ms: Long) {
@@ -159,6 +201,7 @@ class Room(
         val newWords = NewWords(curWords!!)
         nextDrawingPlayer()
         GlobalScope.launch {
+            broadcastPlayerStates()
             drawingPlayer?.socket?.send(Frame.Text(gson.toJson(newWords)))
             timeAndNotify(DELAY_NEW_ROUND_TO_GAME_RUNNING)
         }
@@ -195,6 +238,7 @@ class Room(
                     it.score -= PENALTY_NOBODY_GUESSED_IT
                 }
             }
+            broadcastPlayerStates()
             word?.let {
                 val chosenWord = ChosenWord(it, name)
                 broadcast(gson.toJson(chosenWord))
@@ -230,6 +274,8 @@ class Room(
             drawingPlayer?.let {
                 it.score += GUESS_SCORE_FOR_DRAWING_PLAYER / players.size
             }
+            broadcastPlayerStates()
+
             val announcement = Announcement(
                 "${message.from} has guessed it!",
                 System.currentTimeMillis(),
@@ -237,7 +283,7 @@ class Room(
             )
             broadcast(gson.toJson(announcement))
             val isRoundOver = addWinningPlayer(message.from)
-            if(isRoundOver){
+            if (isRoundOver) {
                 val roundOverAnnouncement = Announcement(
                     "Everybody guessed it! New round is starting...",
                     System.currentTimeMillis(),
@@ -248,6 +294,42 @@ class Room(
             return true
         }
         return false
+    }
+
+    private suspend fun broadcastPlayerStates() {
+        val playersList = players.sortedByDescending { it.score }.map {
+            PlayerData(it.username, it.isDrawing, it.score, it.rank)
+        }
+        playersList.forEachIndexed { index, playerData ->
+            playerData.rank = index + 1
+        }
+        broadcast(gson.toJson(PlayersList(playersList)))
+    }
+
+    private suspend fun sendWordToPlayer(player: Player) {
+        val delay = when (phase) {
+            Phase.WAITING_FOR_START -> DELAY_WAITING_FOR_START_TO_NEW_ROUND
+            Phase.NEW_ROUND -> DELAY_NEW_ROUND_TO_GAME_RUNNING
+            Phase.GAME_RUNNING -> DELAY_GAME_RUNNING_TO_SHOW_WORD
+            Phase.SHOW_WORD -> DELAY_SHOW_WORD_TO_NEW_ROUND
+            else -> 0L
+        }
+        val phaseChange = PhaseChange(phase, delay, drawingPlayer?.username)
+
+        word?.let { curWord ->
+            drawingPlayer?.let { drawingPlayer ->
+                val gameState = GameState(
+                    drawingPlayer.username,
+                    if (player.isDrawing || phase == Phase.SHOW_WORD) {
+                        curWord
+                    } else {
+                        curWord.transformToUnderscores()
+                    }
+                )
+                player.socket.send(Frame.Text(gson.toJson(gameState)))
+            }
+        }
+        player.socket.send(Frame.Text(gson.toJson(phaseChange)))
     }
 
     private fun nextDrawingPlayer() {
@@ -273,8 +355,15 @@ class Room(
         SHOW_WORD
     }
 
+    private fun kill() {
+        playerRemoveJobs.values.forEach { it.cancel() }
+        timerJob?.cancel()
+    }
+
     companion object {
         const val UPDATE_TIME_FREQUENCY = 1000L
+
+        const val PLAYER_REMOVE_TIME = 60000L
 
         const val DELAY_WAITING_FOR_START_TO_NEW_ROUND = 10000L
         const val DELAY_NEW_ROUND_TO_GAME_RUNNING = 20000L
@@ -283,8 +372,7 @@ class Room(
 
         const val PENALTY_NOBODY_GUESSED_IT = 50
         const val GUESS_SCORE_DEFAULT = 50 //For finding
-        const val GUESS_SCORE_PERCENTAGE_MULTIPLIER =
-            50 //This will be based on remaining time. More score for finding quickly
+        const val GUESS_SCORE_PERCENTAGE_MULTIPLIER = 50 //This will be based on remaining time
         const val GUESS_SCORE_FOR_DRAWING_PLAYER = 50 //This score is for well-drawing
     }
 }
