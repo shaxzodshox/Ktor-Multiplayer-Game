@@ -16,8 +16,8 @@ import uk.shakhzod.other.Constants.TYPE_CHOSEN_WORD
 import uk.shakhzod.other.Constants.TYPE_DRAW_DATA
 import uk.shakhzod.other.Constants.TYPE_GAME_STATE
 import uk.shakhzod.other.Constants.TYPE_JOIN_ROOM_HANDSHAKE
-import uk.shakhzod.other.Constants.TYPE_NEW_WORDS
 import uk.shakhzod.other.Constants.TYPE_PHASE_CHANGE
+import uk.shakhzod.other.Constants.TYPE_PING
 import uk.shakhzod.server
 import uk.shakhzod.session.DrawingSession
 
@@ -40,6 +40,11 @@ fun Route.gameWebSocketRoute() {
                     server.playerJoined(player)
                     if(!room.containsPlayer(player.username)){
                         room.addPlayer(player.clientId, player.username, socket)
+                    } else{
+                        //If player disconnected but returned back quickly
+                        val playerInRoom = room.players.find { it.clientId == clientId }
+                        playerInRoom?.socket = socket
+                        playerInRoom?.startPinging()
                     }
                 }
                 is DrawData -> {
@@ -57,6 +62,9 @@ fun Route.gameWebSocketRoute() {
                     if(!room.checkWordAndNotifyPlayers(payload)){
                         room.broadcast(message)
                     }
+                }
+                is Ping -> {
+                    server.players[clientId]?.receivedPong()
                 }
             }
         }
@@ -90,6 +98,7 @@ fun Route.standardWebSocket(
                         TYPE_PHASE_CHANGE -> PhaseChange::class.java
                         TYPE_CHOSEN_WORD -> ChosenWord::class.java
                         TYPE_GAME_STATE -> GameState::class.java
+                        TYPE_PING -> Ping::class.java
                         else -> BaseModel::class.java
                     }
                     val payload: BaseModel = gson.fromJson(message, type)
