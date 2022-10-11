@@ -13,6 +13,8 @@ import uk.shakhzod.gson
 import uk.shakhzod.other.Constants.TYPE_ANNOUNCEMENT
 import uk.shakhzod.other.Constants.TYPE_CHAT_MESSAGE
 import uk.shakhzod.other.Constants.TYPE_CHOSEN_WORD
+import uk.shakhzod.other.Constants.TYPE_DISCONNECT_REQUEST
+import uk.shakhzod.other.Constants.TYPE_DRAW_ACTION
 import uk.shakhzod.other.Constants.TYPE_DRAW_DATA
 import uk.shakhzod.other.Constants.TYPE_GAME_STATE
 import uk.shakhzod.other.Constants.TYPE_JOIN_ROOM_HANDSHAKE
@@ -27,7 +29,7 @@ fun Route.gameWebSocketRoute() {
             when (payload) {
                 is JoinRoomHandshake -> {
                     val room = server.rooms[payload.roomName]
-                    if(room == null){
+                    if (room == null) {
                         val gameError = GameError(GameError.ERROR_ROOM_NOT_FOUND)
                         socket.send(Frame.Text(gson.toJson(gameError)))
                         return@standardWebSocket
@@ -38,9 +40,9 @@ fun Route.gameWebSocketRoute() {
                         payload.clientId
                     )
                     server.playerJoined(player)
-                    if(!room.containsPlayer(player.username)){
+                    if (!room.containsPlayer(player.username)) {
                         room.addPlayer(player.clientId, player.username, socket)
-                    } else{
+                    } else {
                         //If player disconnected but returned back quickly
                         val playerInRoom = room.players.find { it.clientId == clientId }
                         playerInRoom?.socket = socket
@@ -48,10 +50,17 @@ fun Route.gameWebSocketRoute() {
                     }
                 }
                 is DrawData -> {
-                val room: Room = server.rooms[payload.roomName] ?: return@standardWebSocket
-                if(room.phase == Room.Phase.GAME_RUNNING){
-                    room.broadcastToAllExcept(message, clientId)
+                    val room: Room = server.rooms[payload.roomName] ?: return@standardWebSocket
+                    if (room.phase == Room.Phase.GAME_RUNNING) {
+                        room.broadcastToAllExcept(message, clientId)
+                        room.addSerializedDrawInfo(message)
+                    }
+                    room.lastDrawData = payload
                 }
+                is DrawAction -> {
+                    val room: Room = server.getRoomWithClientId(clientId) ?: return@standardWebSocket
+                    room.broadcastToAllExcept(message, clientId)
+                    room.addSerializedDrawInfo(message)
                 }
                 is ChosenWord -> {
                     val room = server.rooms[payload.roomName] ?: return@standardWebSocket
@@ -59,12 +68,15 @@ fun Route.gameWebSocketRoute() {
                 }
                 is ChatMessage -> {
                     val room = server.rooms[payload.roomName] ?: return@standardWebSocket
-                    if(!room.checkWordAndNotifyPlayers(payload)){
+                    if (!room.checkWordAndNotifyPlayers(payload)) {
                         room.broadcast(message)
                     }
                 }
                 is Ping -> {
                     server.players[clientId]?.receivedPong()
+                }
+                is DisconnectRequest -> {
+                    server.playerLeft(clientId, true)
                 }
             }
         }
@@ -99,6 +111,8 @@ fun Route.standardWebSocket(
                         TYPE_CHOSEN_WORD -> ChosenWord::class.java
                         TYPE_GAME_STATE -> GameState::class.java
                         TYPE_PING -> Ping::class.java
+                        TYPE_DISCONNECT_REQUEST -> DisconnectRequest::class.java
+                        TYPE_DRAW_ACTION -> DrawAction::class.java
                         else -> BaseModel::class.java
                     }
                     val payload: BaseModel = gson.fromJson(message, type)
@@ -112,7 +126,7 @@ fun Route.standardWebSocket(
             val playerWithClientId = server.getRoomWithClientId(session.clientId)?.players?.find {
                 it.clientId == session.clientId
             }
-            if(playerWithClientId != null){
+            if (playerWithClientId != null) {
                 server.playerLeft(session.clientId, false)
             }
         }
